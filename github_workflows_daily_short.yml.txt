@@ -1,0 +1,74 @@
+name: Daily Sanatani Short (1/Day IST)
+
+on:
+  schedule:
+    # 06:00 AM IST = 00:30 UTC
+    - cron: '30 0 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run without YouTube upload'
+        default: 'false'
+      privacy_status:
+        description: 'private | unlisted | public'
+        default: 'private'
+      resume_from_stage:
+        description: 'Optional stage name to resume from'
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sanatani-daily-short-ist
+  cancel-in-progress: false
+
+jobs:
+  publish_daily_short:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install FFmpeg, Espeak & Python deps
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg espeak-ng
+          pip install -r cloud_engine/requirements.txt
+
+      - name: Run Sanatani Shorts Orchestrator
+        env:
+          SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          FLAGS="--privacy ${{ github.event.inputs.privacy_status || 'private' }}"
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then FLAGS="$FLAGS --dry-run"; fi
+          if [ -n "${{ github.event.inputs.resume_from_stage }}" ]; then FLAGS="$FLAGS --resume-from ${{ github.event.inputs.resume_from_stage }}"; fi
+          python3 cloud_engine/orchestrator.py $FLAGS
+
+      - name: Upload Run Artifacts & QC Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sanatani-short-run-artifacts
+          path: state/runs/
+          retention-days: 7
+
+      - name: Persist Lock & Story Ledger State
+        if: always()
+        run: |
+          git config user.name "sanatani-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add state/upload_lock.json state/stories_history.json || true
+          git commit -m "chore(state): update IST lock & story ledger" || echo "No state delta"
+          git push || true
